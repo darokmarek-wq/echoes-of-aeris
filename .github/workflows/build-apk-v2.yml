@@ -1,0 +1,73 @@
+name: Build Echoes of Aeris V2 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: 4.7.1
+  EXPORT_NAME: EchoesOfAerisV2
+
+jobs:
+  android:
+    name: Build Android APK V2
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare project
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y unzip python3 ca-certificates
+          rm -rf aeris_godot
+          unzip -q Echoes_of_Aeris_V2_Android.zip
+          sed -i '/^\[rendering\]$/a textures/vram_compression/import_etc2_astc=true' aeris_godot/project.godot
+
+      - name: Setup Godot export templates
+        shell: bash
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates
+          mkdir -p ~/.config
+          if [ -d /root/.config/godot ]; then
+            mv /root/.config/godot ~/.config/godot || true
+          fi
+          if [ -d /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ]; then
+            mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable || true
+          fi
+
+      - name: Fetch optional CC0 environment assets
+        shell: bash
+        working-directory: aeris_godot
+        run: |
+          python3 tools/fetch_assets.py || true
+
+      - name: Import and validate project
+        shell: bash
+        working-directory: aeris_godot
+        run: |
+          godot --headless --verbose --editor --quit
+
+      - name: Build APK
+        shell: bash
+        working-directory: aeris_godot
+        run: |
+          mkdir -p build/android
+          godot --headless --verbose --export-debug "Android" "build/android/${EXPORT_NAME}.apk"
+          test -f "build/android/${EXPORT_NAME}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoesOfAeris-V2-Android-APK
+          path: aeris_godot/build/android/EchoesOfAerisV2.apk
+          if-no-files-found: error
