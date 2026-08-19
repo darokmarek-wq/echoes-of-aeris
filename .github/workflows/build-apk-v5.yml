@@ -1,0 +1,139 @@
+name: Build Echoes of Aeris V5 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Echoes_of_Aeris_V5_Android.zip'
+      - '.github/workflows/build-apk-v5.yml'
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: 4.7.1
+  EXPORT_NAME: EchoesOfAerisV5
+
+jobs:
+  android:
+    name: Validate and build Android V5
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare V5 project
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y unzip ca-certificates
+          rm -rf aeris_v5
+          mkdir -p aeris_v5
+          unzip -q Echoes_of_Aeris_V5_Android.zip -d aeris_v5
+
+          test -f aeris_v5/project.godot
+          test -f aeris_v5/Main.tscn
+          test -f aeris_v5/scripts/player.gd
+          test -f aeris_v5/scripts/mobile_controls.gd
+          test -f aeris_v5/scripts/world_builder.gd
+          test -f aeris_v5/scripts/ci_smoke.gd
+          test -f aeris_v5/assets/generated/ground_albedo.png
+          test -f aeris_v5/assets/audio/ambient.wav
+
+          echo "V5 package structure OK"
+
+      - name: Setup Godot export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.local/share/godot/export_templates
+          mkdir -p ~/.config
+          if [ -d /root/.config/godot ]; then
+            cp -a /root/.config/godot ~/.config/ || true
+          fi
+          if [ -d /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ]; then
+            cp -a /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/ || true
+          fi
+
+      - name: Import project and reject script errors
+        shell: bash
+        working-directory: aeris_v5
+        run: |
+          set -euo pipefail
+          set +e
+          godot --headless --verbose --editor --quit 2>&1 | tee import.log
+          GODOT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ "$GODOT_CODE" -ne 0 ]; then
+            echo "Godot import returned exit code $GODOT_CODE"
+            exit "$GODOT_CODE"
+          fi
+          if grep -Eqi 'SCRIPT ERROR|Parse Error|Failed to load script|Cannot open file.*res://|Failed loading resource' import.log; then
+            echo "Import log contains a fatal project/script error"
+            exit 31
+          fi
+
+      - name: Instantiate gameplay smoke test
+        shell: bash
+        working-directory: aeris_v5
+        run: |
+          set -euo pipefail
+          set +e
+          godot --headless --path . --script res://scripts/ci_smoke.gd 2>&1 | tee smoke.log
+          GODOT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ "$GODOT_CODE" -ne 0 ]; then
+            echo "Gameplay smoke test returned exit code $GODOT_CODE"
+            exit "$GODOT_CODE"
+          fi
+          grep -q 'V5_SMOKE_OK' smoke.log
+          if grep -Eqi 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid get index|Invalid call|Cannot open file.*res://' smoke.log; then
+            echo "Smoke log contains a fatal runtime/script error"
+            exit 32
+          fi
+
+      - name: Build V5 APK
+        shell: bash
+        working-directory: aeris_v5
+        run: |
+          set -euo pipefail
+          mkdir -p build/android
+          set +e
+          godot --headless --verbose --export-debug "Android" "build/android/${EXPORT_NAME}.apk" 2>&1 | tee export.log
+          GODOT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ "$GODOT_CODE" -ne 0 ]; then
+            exit "$GODOT_CODE"
+          fi
+          test -f "build/android/${EXPORT_NAME}.apk"
+          test "$(stat -c%s "build/android/${EXPORT_NAME}.apk")" -gt 1000000
+          if grep -Eqi 'SCRIPT ERROR|Parse Error|Project export.*failed' export.log; then
+            echo "Export log contains a fatal error"
+            exit 33
+          fi
+
+      - name: Upload V5 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoesOfAeris-V5-Android-APK
+          path: aeris_v5/build/android/EchoesOfAerisV5.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload V5 validation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoesOfAeris-V5-QA-Logs
+          path: |
+            aeris_v5/import.log
+            aeris_v5/smoke.log
+            aeris_v5/export.log
+          if-no-files-found: ignore
+          retention-days: 14
