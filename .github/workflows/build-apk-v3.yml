@@ -1,0 +1,77 @@
+name: Build Echoes of Aeris V3 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: 4.7.1
+  EXPORT_NAME: EchoesOfAerisV3
+
+jobs:
+  android:
+    name: Build Android APK V3
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare V3 project
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y unzip ca-certificates
+          rm -rf aeris_godot
+          mkdir -p aeris_godot
+          unzip -q Echoes_of_Aeris_V3_Android.zip -d aeris_godot
+          test -f aeris_godot/project.godot
+          test -f aeris_godot/scripts/mobile_controls.gd
+          test -f aeris_godot/scripts/virtual_joystick.gd
+
+      - name: Setup Godot export templates
+        shell: bash
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates
+          mkdir -p ~/.config
+          if [ -d /root/.config/godot ]; then
+            mv /root/.config/godot ~/.config/godot || true
+          fi
+          if [ -d /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ]; then
+            mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable || true
+          fi
+
+      - name: Import and validate V3
+        shell: bash
+        working-directory: aeris_godot
+        run: |
+          godot --headless --verbose --editor --quit
+
+      - name: Runtime smoke test
+        shell: bash
+        working-directory: aeris_godot
+        run: |
+          timeout 8s godot --headless --path . --quit-after 120 || code=$?
+          if [ "${code:-0}" -ne 0 ] && [ "${code:-0}" -ne 124 ]; then exit "${code}"; fi
+
+      - name: Build V3 APK
+        shell: bash
+        working-directory: aeris_godot
+        run: |
+          mkdir -p build/android
+          godot --headless --verbose --export-debug "Android" "build/android/${EXPORT_NAME}.apk"
+          test -f "build/android/${EXPORT_NAME}.apk"
+
+      - name: Upload V3 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoesOfAeris-V3-Android-APK
+          path: aeris_godot/build/android/EchoesOfAerisV3.apk
+          if-no-files-found: error
